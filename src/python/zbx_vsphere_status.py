@@ -183,7 +183,22 @@ class TargetConnection:
             def eval_multipath_state(multipath_propset):
                 multipaths = self.get_pattern("<name>(.*?)</name><pathState>(.*?)</pathState>", value)
                 for mp_name, mp_state in multipaths:
-                    hostsystems_properties[hostname].setdefault(current_propname, []).append("%s %s" % (mp_name, mp_state))
+                    hba_details = mp_name.split(":")
+                    hba_name = hba_details[0]
+                    hba_num = int(hba_name.replace("vmhba", ""))
+                    lun_id = hba_details[-1]
+
+                    if hba_num >= 32 and hba_num % 64 < 33:
+                        lun_id = "%s pseudo-logical" % lun_id
+                    elif hba_num >= 32 and hba_num % 64 > 32:
+                        lun_id = "%s logical" % lun_id
+                    else:
+                        lun_id = "%s physical" % lun_id
+                    
+                    hostsystems_properties[hostname].setdefault(current_propname, {}).setdefault(lun_id, {}).setdefault(mp_state, 0)
+                    hostsystems_properties[hostname][current_propname][lun_id].setdefault("adapters", [])
+                    hostsystems_properties[hostname][current_propname][lun_id][mp_state] += 1
+                    hostsystems_properties[hostname][current_propname][lun_id]["adapters"].append(mp_name)
 
             def eval_propset_block(elements, id_key, propset):
                 pattern = ""
@@ -237,7 +252,7 @@ class TargetConnection:
 
             self.hostdetails[properties['name'][0]] = {
                 'properties': properties,
-                'sensors': hostsystems_sensors[hostname]
+                #'sensors': hostsystems_sensors[hostname]
             }
 
     def retrieve_datastores(self):
