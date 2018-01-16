@@ -136,24 +136,14 @@ class TargetConnection:
     
     def retrieve_datastores(self):
         self.datastores = {}
-        reply_code, reply_msg, reply_headers, reply_data = query_server(telegram_list["datastores"])
-        elements = get_pattern('<objects><obj type="Datastore">(.*?)</obj>(.*?)</objects>', reply_data)
+        reply_code, reply_msg, reply_headers, reply_data = self.query_target(self.__xml_datastores)
+        elements = self.get_pattern('<objects><obj type="Datastore">(.*?)</obj>(.*?)</objects>', reply_data)
         for datastore, content in elements:
-            entries = get_pattern('<name>(.*?)</name><val xsi:type.*?>(.*?)</val>', content)
+            entries = self.get_pattern('<name>(.*?)</name><val xsi:type.*?>(.*?)</val>', content)
             self.datastores[datastore] = {}
             for name, value in entries:
                 self.datastores[datastore][name] = value
 
-        if "datastore" in query_objects:
-            output("<<<esx_vsphere_datastores:sep(9)>>>")
-            for key in sorted(datastores.keys()):
-                data = datastores[key]
-                output("[%s]" % data.get("name"))
-                for ds_key in sorted(data.keys()):
-                    if ds_key == "name":
-                        continue
-                    output("%s\t%s" % (ds_key.split(".")[1], data[ds_key]))
-    
     def put_in_envelope(self, payload):
         return '<SOAP-ENV:Envelope xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" '\
            'xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ZSI="http://www.zolera.com/schemas/ZSI/" '\
@@ -425,9 +415,11 @@ def main(args):
         t.login()
         t.retrieve_hostsystems()
         t.retrieve_licenses()
+        t.retrieve_datastores()
 
         print(t.hostsystems)
         print(t.licenses)
+        print(t.datastores)
 
     except:
         raise
