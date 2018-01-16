@@ -36,6 +36,10 @@ class TargetConnection:
     systeminfo = {}
     hostsystems = {}
     datastores = {}
+    hostdetails = {}
+
+    opt_direct = True
+    opt_spaces = "underscore"
 
     systemfields = [
         ("apiVersion", float),
@@ -100,6 +104,8 @@ class TargetConnection:
             element = self.get_pattern("<%(entry)s.*>(.*)</%(entry)s>" % { "entry": entry }, reply_data)
             if element:
                 self.systeminfo[entry] = function and function(element[0]) or element[0]
+
+        self.opt_direct = ( self.systeminfo['apiType'] == 'HostAgent' )
         
         return self
 
@@ -110,6 +116,8 @@ class TargetConnection:
         elements = self.get_pattern('<obj type="HostSystem">(.*?)</obj>.*?<val xsi:type="xsd:string">(.*?)</val>', reply_data)
         for hostsystem, name in elements:
             self.hostsystems[hostsystem] = name
+        
+        self.__hostdetails()
 
         return self
 
@@ -133,7 +141,105 @@ class TargetConnection:
             self.licenses += [ lic ]
         
         return self
-    
+
+    def __hostdetails(self):
+        hostsystems_properties = {}
+        hostsystems_sensors    = {}
+
+        self.hostdetails = {}
+
+        # Propsets
+        reply_code, reply_msg, reply_headers, reply_data = self.query_target(self.__xml_hostdetails)
+        hostsystems_objects = self.get_pattern('<objects>(.*?)</objects>', reply_data)
+
+        for entry in hostsystems_objects:
+            hostname = self.get_pattern('<obj type="HostSystem">(.*)</obj>', entry[:512])[0]
+            hostsystems_properties[hostname] = {}
+            hostsystems_sensors[hostname]    = {}
+
+            current_propname = ""
+
+            def eval_sensor_info(sensor_propset):
+                sensor_pattern = ""
+                for key in [ "name", "label", "summary", "key", "currentReading",
+                                "unitModifier", "baseUnits", "sensorType" ]:
+                    sensor_pattern += "<%(name)s>(.*?)</%(name)s>.*?" % { "name": key}
+
+                sensor_data =  self.get_pattern(sensor_pattern, sensor_propset)
+                for name, label, summary, key, currentReading, unitModifier, baseUnits, sensorType in sensor_data:
+                    hostsystems_sensors[hostname][name] = { "name": name, "label": label, "summary": summary, "key": key,
+                                                            "currentReading": currentReading, "unitModifier": unitModifier,
+                                                            "baseUnits": baseUnits, "sensorType": sensorType }
+
+            def eval_hardwarestatus_info(sensor_propset):
+                sensor_pattern = ""
+                for key in [ "name", "label", "summary", "key" ]:
+                    sensor_pattern += "<%(name)s>(.*?)</%(name)s>.*?" % { "name": key}
+
+                sensor_data = self.get_pattern(sensor_pattern, sensor_propset)
+                for name, label, summary, key in sensor_data:
+                    hostsystems_sensors[hostname][name] = { "name": name, "label": label, "summary": summary, "key": key }
+
+            def eval_multipath_state(multipath_propset):
+                multipaths = self.get_pattern("<name>(.*?)</name><pathState>(.*?)</pathState>", value)
+                for mp_name, mp_state in multipaths:
+                    hostsystems_properties[hostname].setdefault(current_propname, []).append("%s %s" % (mp_name, mp_state))
+
+            def eval_propset_block(elements, id_key, propset):
+                pattern = ""
+                for key in elements:
+                    pattern += "<%(name)s>(.*?)</%(name)s>.*?" % { "name": key}
+
+                data = self.get_pattern(pattern, propset)
+                for match_groups in data:
+                    entries = dict(zip(elements, match_groups))
+                    for key, value in entries.items():
+                        hostsystems_properties[hostname].setdefault("%s.%s.%s" % \
+                            (current_propname, key, entries[id_key]), []).append(value)
+
+            def eval_cpu_pkg(cpu_pkg_propset):
+                eval_propset_block( [ "index", "vendor", "hz", "busHz", "description" ], "index", cpu_pkg_propset)
+
+            def eval_pci_device(pci_propset):
+                eval_propset_block( [ "id", "vendorName", "deviceName" ], "id", pci_propset)
+
+            def eval_systeminfo_other(otherinfo_propset):
+                data       = self.get_pattern("<identifierValue>(.*?)</identifierValue>.*?<key>(.*?)</key>", otherinfo_propset)
+                keys_index = {}
+
+                for value, key in data:
+                    idx = 0
+                    if key in keys_index:
+                        keys_index[key] = keys_index[key] + 1
+                        idx = keys_index[key]
+                    hostsystems_properties[hostname]["hardware.systemInfo.otherIdentifyingInfo.%s.%d" % (key, idx)] = [ value ]
+                    keys_index[key] = idx
+
+            eval_functions = {
+                "config.multipathState.path"                                      : eval_multipath_state,
+                "runtime.healthSystemRuntime.systemHealthInfo.numericSensorInfo"  : eval_sensor_info,
+                "runtime.healthSystemRuntime.hardwareStatusInfo.storageStatusInfo": eval_hardwarestatus_info,
+                "runtime.healthSystemRuntime.hardwareStatusInfo.cpuStatusInfo"    : eval_hardwarestatus_info,
+                "runtime.healthSystemRuntime.hardwareStatusInfo.memoryStatusInfo" : eval_hardwarestatus_info,
+                "hardware.cpuPkg"                                                 : eval_cpu_pkg,
+                "hardware.pciDevice"                                              : eval_pci_device,
+                "hardware.systemInfo.otherIdentifyingInfo"                        : eval_systeminfo_other,
+            }
+
+            elements = self.get_pattern('<propSet><name>(.*?)</name><val.*?>(.*?)</val></propSet>', entry)
+            for current_propname, value in elements:
+                if eval_functions.get(current_propname):
+                    eval_functions[current_propname](value)
+                else:
+                    hostsystems_properties[hostname].setdefault(current_propname, []).append(value)
+
+        for hostname, properties in hostsystems_properties.items():
+
+            self.hostdetails[properties['name'][0]] = {
+                'properties': properties,
+                'sensors': hostsystems_sensors[hostname]
+            }
+
     def retrieve_datastores(self):
         self.datastores = {}
         reply_code, reply_msg, reply_headers, reply_data = self.query_target(self.__xml_datastores)
@@ -263,6 +369,12 @@ class TargetConnection:
                 os.unlink(self.host_cookie_file)
         except:
             pass
+    
+    def convert_hostname(self, h):
+        if self.opt_spaces == "cut":
+            return h.split()[0]
+        else:
+            return h.replace(" ", "_")
         
     #
     # Additional values for fetching data
@@ -380,6 +492,69 @@ class TargetConnection:
          '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>rpToVm</ns1:name><ns1:type>ResourcePool</ns1:type>'\
          '<ns1:path>vm</ns1:path><ns1:skip>false</ns1:skip></ns1:selectSet>'\
          '</ns1:objectSet></ns1:specSet><ns1:options></ns1:options></ns1:RetrievePropertiesEx>'
+    
+    __xml_hostdetails = '<ns1:RetrievePropertiesEx xsi:type="ns1:RetrievePropertiesExRequestType">' \
+         '<ns1:_this type="PropertyCollector">%(propertyCollector)s</ns1:_this><ns1:specSet><ns1:propSet>'\
+         '<ns1:type>HostSystem</ns1:type>'\
+         '<ns1:pathSet>summary.quickStats.overallMemoryUsage</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.cpuPkg</ns1:pathSet>'\
+         '<ns1:pathSet>runtime.powerState</ns1:pathSet>'\
+         '<ns1:pathSet>summary.quickStats.overallCpuUsage</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.biosInfo.biosVersion</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.biosInfo.releaseDate</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.cpuInfo.hz</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.cpuInfo.numCpuThreads</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.cpuInfo.numCpuPackages</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.cpuInfo.numCpuCores</ns1:pathSet>'\
+         '<ns1:pathSet>config.multipathState.path</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.systemInfo.model</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.systemInfo.uuid</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.systemInfo.otherIdentifyingInfo</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.systemInfo.vendor</ns1:pathSet>'\
+         '<ns1:pathSet>name</ns1:pathSet>'\
+         '<ns1:pathSet>overallStatus</ns1:pathSet>'\
+         '<ns1:pathSet>runtime.healthSystemRuntime.systemHealthInfo.numericSensorInfo</ns1:pathSet>'\
+         '<ns1:pathSet>runtime.healthSystemRuntime.hardwareStatusInfo.storageStatusInfo</ns1:pathSet>'\
+         '<ns1:pathSet>runtime.healthSystemRuntime.hardwareStatusInfo.cpuStatusInfo</ns1:pathSet>'\
+         '<ns1:pathSet>runtime.healthSystemRuntime.hardwareStatusInfo.memoryStatusInfo</ns1:pathSet>'\
+         '<ns1:pathSet>runtime.inMaintenanceMode</ns1:pathSet>'\
+         '<ns1:pathSet>hardware.memorySize</ns1:pathSet></ns1:propSet>'\
+         '<ns1:objectSet><ns1:obj type="Folder">%(rootFolder)s</ns1:obj><ns1:skip>false</ns1:skip>'\
+         '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>visitFolders</ns1:name>'\
+           '<ns1:type>Folder</ns1:type><ns1:path>childEntity</ns1:path><ns1:skip>false</ns1:skip>'\
+           '<ns1:selectSet><ns1:name>visitFolders</ns1:name></ns1:selectSet>'\
+           '<ns1:selectSet><ns1:name>dcToHf</ns1:name></ns1:selectSet>'\
+           '<ns1:selectSet><ns1:name>dcToVmf</ns1:name></ns1:selectSet>'\
+           '<ns1:selectSet><ns1:name>crToH</ns1:name></ns1:selectSet>'\
+           '<ns1:selectSet><ns1:name>crToRp</ns1:name></ns1:selectSet>'\
+           '<ns1:selectSet><ns1:name>dcToDs</ns1:name></ns1:selectSet>'\
+           '<ns1:selectSet><ns1:name>hToVm</ns1:name></ns1:selectSet>'\
+           '<ns1:selectSet><ns1:name>rpToVm</ns1:name></ns1:selectSet></ns1:selectSet>'\
+         '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>dcToVmf</ns1:name><ns1:type>Datacenter</ns1:type>'\
+           '<ns1:path>vmFolder</ns1:path><ns1:skip>false</ns1:skip>'\
+           '<ns1:selectSet><ns1:name>visitFolders</ns1:name></ns1:selectSet></ns1:selectSet>'\
+         '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>dcToDs</ns1:name><ns1:type>Datacenter</ns1:type>'\
+           '<ns1:path>datastore</ns1:path><ns1:skip>false</ns1:skip>'\
+           '<ns1:selectSet><ns1:name>visitFolders</ns1:name></ns1:selectSet></ns1:selectSet>'\
+         '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>dcToHf</ns1:name><ns1:type>Datacenter</ns1:type>'\
+           '<ns1:path>hostFolder</ns1:path><ns1:skip>false</ns1:skip>'\
+           '<ns1:selectSet><ns1:name>visitFolders</ns1:name></ns1:selectSet></ns1:selectSet>'\
+         '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>crToH</ns1:name><ns1:type>ComputeResource</ns1:type>'\
+           '<ns1:path>host</ns1:path><ns1:skip>false</ns1:skip></ns1:selectSet>'\
+         '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>crToRp</ns1:name><ns1:type>ComputeResource</ns1:type>'\
+           '<ns1:path>resourcePool</ns1:path><ns1:skip>false</ns1:skip>'\
+           '<ns1:selectSet><ns1:name>rpToRp</ns1:name></ns1:selectSet>'\
+           '<ns1:selectSet><ns1:name>rpToVm</ns1:name></ns1:selectSet></ns1:selectSet>'\
+         '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>rpToRp</ns1:name><ns1:type>ResourcePool</ns1:type>'\
+           '<ns1:path>resourcePool</ns1:path><ns1:skip>false</ns1:skip>'\
+           '<ns1:selectSet><ns1:name>rpToRp</ns1:name></ns1:selectSet>'\
+           '<ns1:selectSet><ns1:name>rpToVm</ns1:name></ns1:selectSet></ns1:selectSet>'\
+         '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>hToVm</ns1:name><ns1:type>HostSystem</ns1:type>'\
+           '<ns1:path>vm</ns1:path><ns1:skip>false</ns1:skip>'\
+           '<ns1:selectSet><ns1:name>visitFolders</ns1:name></ns1:selectSet></ns1:selectSet>'\
+         '<ns1:selectSet xsi:type="ns1:TraversalSpec"><ns1:name>rpToVm</ns1:name><ns1:type>ResourcePool</ns1:type>'\
+           '<ns1:path>vm</ns1:path><ns1:skip>false</ns1:skip></ns1:selectSet>'\
+         '</ns1:objectSet></ns1:specSet><ns1:options></ns1:options></ns1:RetrievePropertiesEx>'
     #
     # Exception wrapper classes
     #
@@ -420,6 +595,7 @@ def main(args):
         print(t.hostsystems)
         print(t.licenses)
         print(t.datastores)
+        print(t.hostdetails)
 
     except:
         raise
