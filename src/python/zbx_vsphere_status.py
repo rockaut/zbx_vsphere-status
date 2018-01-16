@@ -205,16 +205,23 @@ class TargetConnection:
         time_sent = time.time()
         self.__connection.request("POST", "/sdk", soapdata, headers)
 
-        def check_not_authenticated(text):
+        def check_not_authenticated(text, retry):
             if "NotAuthenticatedFault" in str(text):
                 raise TargetConnection.QueryServerException("No longer authenticated")
-            #elif '<fault xsi:type="NotAuthenticated">' in str(text):
-            #    raise TargetConnection.QueryServerException("No longer authenticated")
+            elif '<fault xsi:type="NotAuthenticated">' in str(text):
+                if retry <= 1:
+                    self.logout()
+                    print("Trying logout")
+                else:
+                    raise TargetConnection.QueryServerException("No longer authenticated")
 
         response = self.__connection.getresponse()
         response_data.append(response.read())
 
-        check_not_authenticated(response_data[0][:512])
+        retry = 0
+        while retry <= 1:
+            retry += 1
+            check_not_authenticated(response_data[0][:512], retry)
 
         while True:
             # Look for a <token>0</token> field.
@@ -404,7 +411,7 @@ class TargetConnection:
 
 def main(args):
     """ Main entry point of the app """
-    print(args)
+    #print(args)
 
     try:
         #global target_connection
