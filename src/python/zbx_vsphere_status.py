@@ -98,7 +98,10 @@ class TargetConnection:
     def retrieve_systeminfo(self):
         """Retrieve basic data, which requires no login"""
         payload = self.__xml_systeminfo
-        reply_code, reply_msg, reply_headers, reply_data = self.query_target(payload)
+        reply_code, reply_msg, reply_headers, reply_data = self.doQuery(payload)
+        if reply_data == false:
+            raise TargetConnection.QueryServerException("Couldn't query data")
+        
 
         for entry, function in self.systemfields:
             element = self.get_pattern("<%(entry)s.*>(.*)</%(entry)s>" % { "entry": entry }, reply_data)
@@ -112,7 +115,10 @@ class TargetConnection:
     def retrieve_hostsystems(self):
         payload = self.__xml_hostsystems
 
-        reply_code, reply_msg, reply_headers, reply_data = self.query_target(self.__xml_hostsystems)
+        reply_code, reply_msg, reply_headers, reply_data = self.doQuery(self.__xml_hostsystems)
+        if reply_data == false:
+            raise TargetConnection.QueryServerException("Couldn't query data")
+        
         elements = self.get_pattern('<obj type="HostSystem">(.*?)</obj>.*?<val xsi:type="xsd:string">(.*?)</val>', reply_data)
         for hostsystem, name in elements:
             self.hostsystems[hostsystem] = name
@@ -123,7 +129,9 @@ class TargetConnection:
 
     def retrieve_licenses(self):
         self.licenses = []
-        reply_code, reply_msg, reply_headers, reply_data = self.query_target(self.__xml_licensesused)
+        reply_code, reply_msg, reply_headers, reply_data = self.doQuery(self.__xml_licensesused)
+        if reply_data == false:
+            raise TargetConnection.QueryServerException("Couldn't query data")       
 
         root_node     = minidom.parseString(reply_data)
         licenses_node = root_node.getElementsByTagName("LicenseManagerLicenseInfo")
@@ -149,7 +157,10 @@ class TargetConnection:
         self.hostdetails = {}
 
         # Propsets
-        reply_code, reply_msg, reply_headers, reply_data = self.query_target(self.__xml_hostdetails)
+        reply_code, reply_msg, reply_headers, reply_data = self.doQuery(self.__xml_hostdetails)
+        if reply_data == false:
+            raise TargetConnection.QueryServerException("Couldn't query data")
+        
         hostsystems_objects = self.get_pattern('<objects>(.*?)</objects>', reply_data)
 
         for entry in hostsystems_objects:
@@ -257,7 +268,10 @@ class TargetConnection:
 
     def retrieve_datastores(self):
         self.datastores = {}
-        reply_code, reply_msg, reply_headers, reply_data = self.query_target(self.__xml_datastores)
+        reply_code, reply_msg, reply_headers, reply_data = self.doQuery(self.__xml_datastores)
+        if reply_data == false:
+            raise TargetConnection.QueryServerException("Couldn't query data")
+        
         elements = self.get_pattern('<objects><obj type="Datastore">(.*?)</obj>(.*?)</objects>', reply_data)
         for datastore, content in elements:
             entries = self.get_pattern('<name>(.*?)</name><val xsi:type.*?>(.*?)</val>', content)
@@ -286,6 +300,22 @@ class TargetConnection:
                                 ( "\"", "&quot;") ]:
             text = text.replace(char, replacement)
         return text
+
+    def doQuery(self, payload, payload_params = None, retry = 0, retries = 2)
+        while retry <= retries:
+            try:
+                retry += 1
+
+                if self.server_cookie == None :
+                    self.login()
+
+                return self.query_target(payload, payload_params, retry, retries)
+            except NotAuthenticatedException:
+                self.logout()
+            finally:
+                pass
+        
+        return false, false, false, false
 
     def query_target(self, payload, payload_params=None):
         if not self.__connection:
@@ -316,22 +346,16 @@ class TargetConnection:
         time_sent = time.time()
         self.__connection.request("POST", "/sdk", soapdata, headers)
 
-        def check_not_authenticated(text, retry):
+        def check_not_authenticated(text):
             if "NotAuthenticatedFault" in str(text):
-                raise TargetConnection.QueryServerException("No longer authenticated")
+                raise TargetConnection.NotAuthenticatedException("No longer authenticated")
             elif '<fault xsi:type="NotAuthenticated">' in str(text):
-                if retry <= 1:
-                    self.__removeCookie()
-                else:
-                    raise TargetConnection.QueryServerException("No longer authenticated")
+                raise TargetConnection.NotAuthenticatedException("No longer authenticated")
 
         response = self.__connection.getresponse()
         response_data.append(response.read())
 
-        retry = 0
-        while retry <= 1:
-            retry += 1
-            check_not_authenticated(response_data[0][:512], retry)
+        check_not_authenticated(response_data[0][:512], retry)
 
         while True:
             # Look for a <token>0</token> field.
@@ -363,8 +387,7 @@ class TargetConnection:
         else:
             payload = self.__xml_login
             reply_code, reply_msg, reply_headers, reply_data = \
-                        self.query_target(payload, payload_params = {"username": self.encode_url(self.user),
-                                                                "password": self.encode_url(self.secret)})
+                self.query_target(payload, payload_params = {"username": self.encode_url(self.user), "password": self.encode_url(self.secret)})
 
             if "InvalidLogin" in reply_data:
                 self.last_update = "Cannot login to vSphere Server. Login response is not 'OK'. Please check the credentials"
@@ -379,11 +402,15 @@ class TargetConnection:
     def logout(self):
         try:
             self.query_target(self.__xml_logout)
-            self.__removeCookie()
+        except TargetConnection.NotAuthenticatedException:
+            pass
         except:
             pass
+        finally:
+            self.__removeCookie()
 
     def __removeCookie(self):
+        self.server_cookie = None
         if self.host_cookie_path and os.path.exists(self.host_cookie_file):
             os.unlink(self.host_cookie_file)
     
@@ -579,6 +606,9 @@ class TargetConnection:
         pass
 
     class QueryServerException(Exception):
+        pass
+
+    class NotAuthenticatedException(Exception):
         pass
 
     #
