@@ -99,7 +99,7 @@ class TargetConnection:
         """Retrieve basic data, which requires no login"""
         payload = self.__xml_systeminfo
         reply_code, reply_msg, reply_headers, reply_data = self.doQuery(payload)
-        if reply_data == false:
+        if reply_data == False:
             raise TargetConnection.QueryServerException("Couldn't query data")
         
 
@@ -116,7 +116,7 @@ class TargetConnection:
         payload = self.__xml_hostsystems
 
         reply_code, reply_msg, reply_headers, reply_data = self.doQuery(self.__xml_hostsystems)
-        if reply_data == false:
+        if reply_data == False:
             raise TargetConnection.QueryServerException("Couldn't query data")
         
         elements = self.get_pattern('<obj type="HostSystem">(.*?)</obj>.*?<val xsi:type="xsd:string">(.*?)</val>', reply_data)
@@ -130,7 +130,7 @@ class TargetConnection:
     def retrieve_licenses(self):
         self.licenses = []
         reply_code, reply_msg, reply_headers, reply_data = self.doQuery(self.__xml_licensesused)
-        if reply_data == false:
+        if reply_data == False:
             raise TargetConnection.QueryServerException("Couldn't query data")       
 
         root_node     = minidom.parseString(reply_data)
@@ -158,7 +158,7 @@ class TargetConnection:
 
         # Propsets
         reply_code, reply_msg, reply_headers, reply_data = self.doQuery(self.__xml_hostdetails)
-        if reply_data == false:
+        if reply_data == False:
             raise TargetConnection.QueryServerException("Couldn't query data")
         
         hostsystems_objects = self.get_pattern('<objects>(.*?)</objects>', reply_data)
@@ -269,7 +269,7 @@ class TargetConnection:
     def retrieve_datastores(self):
         self.datastores = {}
         reply_code, reply_msg, reply_headers, reply_data = self.doQuery(self.__xml_datastores)
-        if reply_data == false:
+        if reply_data == False:
             raise TargetConnection.QueryServerException("Couldn't query data")
         
         elements = self.get_pattern('<objects><obj type="Datastore">(.*?)</obj>(.*?)</objects>', reply_data)
@@ -301,7 +301,7 @@ class TargetConnection:
             text = text.replace(char, replacement)
         return text
 
-    def doQuery(self, payload, payload_params = None, retry = 0, retries = 2)
+    def doQuery(self, payload, payload_params = None, retry = 0, retries = 2):
         while retry <= retries:
             try:
                 retry += 1
@@ -309,13 +309,13 @@ class TargetConnection:
                 if self.server_cookie == None :
                     self.login()
 
-                return self.query_target(payload, payload_params, retry, retries)
-            except NotAuthenticatedException:
+                return self.query_target(payload, payload_params)
+            except TargetConnection.NotAuthenticatedException:
                 self.logout()
             finally:
                 pass
         
-        return false, false, false, false
+        return False, False, False, False
 
     def query_target(self, payload, payload_params=None):
         if not self.__connection:
@@ -355,7 +355,7 @@ class TargetConnection:
         response = self.__connection.getresponse()
         response_data.append(response.read())
 
-        check_not_authenticated(response_data[0][:512], retry)
+        check_not_authenticated(response_data[0][:512])
 
         while True:
             # Look for a <token>0</token> field.
