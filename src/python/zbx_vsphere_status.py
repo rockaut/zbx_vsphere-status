@@ -321,8 +321,7 @@ class TargetConnection:
                 raise TargetConnection.QueryServerException("No longer authenticated")
             elif '<fault xsi:type="NotAuthenticated">' in str(text):
                 if retry <= 1:
-                    self.logout()
-                    print("Trying logout")
+                    self.__removeCookie()
                 else:
                     raise TargetConnection.QueryServerException("No longer authenticated")
 
@@ -380,10 +379,13 @@ class TargetConnection:
     def logout(self):
         try:
             self.query_target(self.__xml_logout)
-            if self.host_cookie_path and os.path.exists(self.host_cookie_file):
-                os.unlink(self.host_cookie_file)
+            self.__removeCookie()
         except:
             pass
+
+    def __removeCookie(self):
+        if self.host_cookie_path and os.path.exists(self.host_cookie_file):
+            os.unlink(self.host_cookie_file)
     
     def convert_hostname(self, h):
         if self.opt_spaces == "cut":
